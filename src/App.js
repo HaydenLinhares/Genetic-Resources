@@ -1,8 +1,15 @@
-import React from 'react';
-import Carousel from './components/Carousel.js';
-import SpeciesList from './SpeciesList'; // or './SpeciesList.js' if renamed
+import React, { useState } from 'react';
+import Carousel from './components/Carousel';
+import SpeciesList from './SpeciesList';
+import Login from './components/Login';
 
 function App() {
+  const [authenticated, setAuthenticated] = useState(false);
+
+  if (!authenticated) {
+    return <Login onLogin={() => setAuthenticated(true)} />;
+  }
+
   return (
     <>
       <Carousel />
