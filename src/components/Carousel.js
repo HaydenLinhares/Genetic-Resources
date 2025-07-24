@@ -2,9 +2,9 @@ import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
 const images = [
-  { src: "images/carousel/image1.jpg", alt: "Image 1" },
-  { src: "images/carousel/image2.jpg", alt: "Image 2" },
-  { src: "images/carousel/image3.jpg", alt: "Image 3" },
+  { src: "images/carousel/image1.JPG", alt: "Image 1" },
+  { src: "images/carousel/image2.JPG", alt: "Image 2" },
+  { src: "images/carousel/image3.JPG", alt: "Image 3" },
 ];
 
 export default function Carousel() {
