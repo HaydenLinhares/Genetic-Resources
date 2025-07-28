@@ -11,7 +11,7 @@ export default function Carousel() {
   const [index, setIndex] = useState(0);
 
   useEffect(() => {
-    const timer = setInterval(() => setIndex((i) => (i + 1) % images.length), 10000);
+    const timer = setInterval(() => setIndex((i) => (i + 1) % images.length), 8000);
     return () => clearInterval(timer);
   }, []);
 
@@ -20,7 +20,7 @@ export default function Carousel() {
       className="relative overflow-hidden rounded-2xl shadow-lg bg-red-500"
       style={{
         width: "1920px", // Explicit pixel values
-        height: "1280px",
+        height: "480px",
       }}
     >
       {/* Debugging overlay (remove in production) */}
