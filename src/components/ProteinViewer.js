@@ -614,7 +614,7 @@ function ProteinViewer() {
                   Clear Search
                 </Button>
               )}
-            </div
+            </div>
           </div>
         )}
       </div>
