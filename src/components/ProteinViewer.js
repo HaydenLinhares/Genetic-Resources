@@ -131,9 +131,13 @@ function ProteinViewer() {
   const [isSearching, setIsSearching] = useState(false)
   const [totalEntries, setTotalEntries] = useState(0)
   const [loadingDetails, setLoadingDetails] = useState({
-    proteins: false,
+    proteins_part1: false,
+    proteins_part2: false,
+    proteins_part3: false,
     nucleotides: false,
-    annotations: false,
+    annotations_part1: false,
+    annotations_part2: false,
+    annotations_part3: false,
     locus: false,
   })
 
@@ -151,9 +155,13 @@ function ProteinViewer() {
       setLoadingProgress(5)
 
       const files = [
-        { name: "protein_seqs.json", key: "proteins" },
+        { name: "protein_seqs_part1.json", key: "proteins_part1" },
+        { name: "protein_seqs_part2.json", key: "proteins_part2" },
+        { name: "protein_seqs_part3.json", key: "proteins_part3" },
         { name: "nucleotide_seqs.json", key: "nucleotides" },
-        { name: "annotations.json", key: "annotations" },
+        { name: "annotations_cleaned_part1.json", key: "annotations_part1" },
+        { name: "annotations_cleaned_part2.json", key: "annotations_part2" },
+        { name: "annotations_cleaned_part3.json", key: "annotations_part3" },
         { name: "locus__annotations.json", key: "locus" },
       ]
 
@@ -215,7 +223,19 @@ function ProteinViewer() {
 
       setLocusAnnotations(loadedData.locus || {})
 
-      const mergedData = mergeProteinData(loadedData.proteins, loadedData.nucleotides, loadedData.annotations)
+      const mergedProteins = {
+        ...loadedData.proteins_part1,
+        ...loadedData.proteins_part2,
+        ...loadedData.proteins_part3,
+      }
+
+      const mergedAnnotations = {
+        ...loadedData.annotations_part1,
+        ...loadedData.annotations_part2,
+        ...loadedData.annotations_part3,
+      }
+
+      const mergedData = mergeProteinData(mergedProteins, loadedData.nucleotides, mergedAnnotations)
 
       setLoadingProgress(85)
       setLoadingStatus("Grouping by locus...")
@@ -430,19 +450,55 @@ function ProteinViewer() {
             <h6 className="mb-2 text-dark">Database Files:</h6>
             <div className="d-flex flex-column gap-1">
               <div className="d-flex justify-content-between align-items-center">
-                <span className="small text-dark">Protein Sequences:</span>
+                <span className="small text-dark">Protein Sequences Part 1:</span>
                 <Badge
                   bg={
-                    loadingDetails.proteins === "complete"
+                    loadingDetails.proteins_part1 === "complete"
                       ? "success"
-                      : loadingDetails.proteins === "error"
+                      : loadingDetails.proteins_part1 === "error"
                         ? "danger"
                         : "secondary"
                   }
                 >
-                  {loadingDetails.proteins === "complete"
+                  {loadingDetails.proteins_part1 === "complete"
                     ? "Loaded"
-                    : loadingDetails.proteins === "error"
+                    : loadingDetails.proteins_part1 === "error"
+                      ? "Error"
+                      : "Loading..."}
+                </Badge>
+              </div>
+              <div className="d-flex justify-content-between align-items-center">
+                <span className="small text-dark">Protein Sequences Part 2:</span>
+                <Badge
+                  bg={
+                    loadingDetails.proteins_part2 === "complete"
+                      ? "success"
+                      : loadingDetails.proteins_part2 === "error"
+                        ? "danger"
+                        : "secondary"
+                  }
+                >
+                  {loadingDetails.proteins_part2 === "complete"
+                    ? "Loaded"
+                    : loadingDetails.proteins_part2 === "error"
+                      ? "Error"
+                      : "Loading..."}
+                </Badge>
+              </div>
+              <div className="d-flex justify-content-between align-items-center">
+                <span className="small text-dark">Protein Sequences Part 3:</span>
+                <Badge
+                  bg={
+                    loadingDetails.proteins_part3 === "complete"
+                      ? "success"
+                      : loadingDetails.proteins_part3 === "error"
+                        ? "danger"
+                        : "secondary"
+                  }
+                >
+                  {loadingDetails.proteins_part3 === "complete"
+                    ? "Loaded"
+                    : loadingDetails.proteins_part3 === "error"
                       ? "Error"
                       : "Loading..."}
                 </Badge>
@@ -466,19 +522,55 @@ function ProteinViewer() {
                 </Badge>
               </div>
               <div className="d-flex justify-content-between align-items-center">
-                <span className="small text-dark">Annotations:</span>
+                <span className="small text-dark">Annotations Part 1:</span>
                 <Badge
                   bg={
-                    loadingDetails.annotations === "complete"
+                    loadingDetails.annotations_part1 === "complete"
                       ? "success"
-                      : loadingDetails.annotations === "error"
+                      : loadingDetails.annotations_part1 === "error"
                         ? "danger"
                         : "secondary"
                   }
                 >
-                  {loadingDetails.annotations === "complete"
+                  {loadingDetails.annotations_part1 === "complete"
                     ? "Loaded"
-                    : loadingDetails.annotations === "error"
+                    : loadingDetails.annotations_part1 === "error"
+                      ? "Error"
+                      : "Loading..."}
+                </Badge>
+              </div>
+              <div className="d-flex justify-content-between align-items-center">
+                <span className="small text-dark">Annotations Part 2:</span>
+                <Badge
+                  bg={
+                    loadingDetails.annotations_part2 === "complete"
+                      ? "success"
+                      : loadingDetails.annotations_part2 === "error"
+                        ? "danger"
+                        : "secondary"
+                  }
+                >
+                  {loadingDetails.annotations_part2 === "complete"
+                    ? "Loaded"
+                    : loadingDetails.annotations_part2 === "error"
+                      ? "Error"
+                      : "Loading..."}
+                </Badge>
+              </div>
+              <div className="d-flex justify-content-between align-items-center">
+                <span className="small text-dark">Annotations Part 3:</span>
+                <Badge
+                  bg={
+                    loadingDetails.annotations_part3 === "complete"
+                      ? "success"
+                      : loadingDetails.annotations_part3 === "error"
+                        ? "danger"
+                        : "secondary"
+                  }
+                >
+                  {loadingDetails.annotations_part3 === "complete"
+                    ? "Loaded"
+                    : loadingDetails.annotations_part3 === "error"
                       ? "Error"
                       : "Loading..."}
                 </Badge>
@@ -533,8 +625,9 @@ function ProteinViewer() {
           <strong>Troubleshooting:</strong>
           <ul className="mb-0 mt-2">
             <li>
-              Make sure these files exist in `/public/`: protein_seqs.json, nucleotide_seqs.json, annotations.json,
-              locus__annotations.json
+              Make sure these files exist in `/public/`: protein_seqs_part1.json, protein_seqs_part2.json,
+              protein_seqs_part3.json, nucleotide_seqs.json, annotations_cleaned_part1.json,
+              annotations_cleaned_part2.json, annotations_cleaned_part3.json, locus__annotations.json
             </li>
             <li>Verify the JSON files contain valid data structures</li>
             <li>Check the browser console for more detailed error information</li>
