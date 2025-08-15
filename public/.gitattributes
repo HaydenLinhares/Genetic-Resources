@@ -1,1 +1,5 @@
 protein_data.json filter=lfs diff=lfs merge=lfs -text
+locus_annotations.json filter=lfs diff=lfs merge=lfs -text
+protein_seqs.json filter=lfs diff=lfs merge=lfs -text
+nucleotide_seqs.json filter=lfs diff=lfs merge=lfs -text
+annotations.json filter=lfs diff=lfs merge=lfs -text
