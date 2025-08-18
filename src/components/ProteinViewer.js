@@ -135,11 +135,21 @@ class ModularDataManager {
       if (!data || typeof data !== "object") return
 
       if (filename.includes("_proteins.json") || filename === "proteins.json") {
-        if (data[proteinId]) {
+        if (Array.isArray(data)) {
+          const protein = data.find((p) => p.protein_id === proteinId)
+          if (protein) {
+            proteinData = protein
+          }
+        } else if (data[proteinId]) {
           proteinData = data[proteinId]
         }
       } else if (filename.includes("_nucleotides-cds_") || filename.includes("nucleotides-cds_")) {
-        if (data[proteinId]) {
+        if (Array.isArray(data)) {
+          const nucleotide = data.find((n) => n.protein_id === proteinId)
+          if (nucleotide) {
+            nucleotideData = nucleotide
+          }
+        } else if (data[proteinId]) {
           nucleotideData = data[proteinId]
         }
       } else if (filename.includes("_annotations_") || filename.includes("annotations_")) {
