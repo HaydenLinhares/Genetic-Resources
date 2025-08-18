@@ -94,13 +94,14 @@ class ModularDataManager {
           // Map source file names to actual file prefixes
           const fileName = file.replace("_proteins.fa", "").replace(".fa", "")
 
-          // Map known source files to their actual file prefixes
           const prefixMap = {
-            agave_deserti: "desertii",
+            agave_deserti: "agave_deserti", // Keep original for protein files
             agave_tequilana: "agave_tequilana",
             agave_fourcroydes: "fourcroydes",
             agave_sisalana: "sisalana",
             hybrid_11648: "hybrid11648",
+            sample_organism: "sample_organism",
+            test_data: "test_data",
           }
 
           return prefixMap[fileName] || fileName
@@ -109,17 +110,22 @@ class ModularDataManager {
     ]
 
     sourcePrefixes.forEach((prefix) => {
-      // Add main protein file - check both patterns
-      if (prefix === "agave_tequilana") {
-        partFiles.add(`${prefix}_proteins.json`)
-      } else {
-        // For other species, try the standard protein file pattern
-        partFiles.add(`${prefix}_proteins.json`)
-      }
+      partFiles.add(`${prefix}_proteins.json`)
+
+      const annotationPrefix =
+        prefix === "agave_deserti"
+          ? "desertii"
+          : prefix === "agave_fourcroydes"
+            ? "fourcroydes"
+            : prefix === "agave_sisalana"
+              ? "sisalana"
+              : prefix === "hybrid_11648"
+                ? "hybrid11648"
+                : prefix
 
       // Add annotation files - these exist for all species in parts 1-17
       for (let i = 1; i <= 17; i++) {
-        partFiles.add(`${prefix}_annotations_part${i}.json`)
+        partFiles.add(`${annotationPrefix}_annotations_part${i}.json`)
       }
     })
 
@@ -443,6 +449,20 @@ function ModularProteinViewer() {
 
       setIsSearching(true)
 
+      if (searchQuery.trim() && loadedProteins.length < proteinHeaders.length) {
+        console.log("[v0] Search requires full dataset, loading remaining proteins...")
+
+        // Load all remaining proteins for comprehensive search
+        const remainingHeaders = proteinHeaders.slice(loadedProteins.length)
+        const batchSize = 500 // Larger batches for search
+
+        for (let i = 0; i < remainingHeaders.length; i += batchSize) {
+          const batch = remainingHeaders.slice(i, i + batchSize)
+          await loadProteinBatch(batch)
+        }
+      }
+
+      // Now search across all loaded proteins
       const results = groupedProteins.filter((group) => {
         const matchesSpecies = speciesFilter === "all" || group.species.includes(speciesFilter)
 
@@ -469,7 +489,7 @@ function ModularProteinViewer() {
       setDisplayProteins(results.slice(0, 2000))
       setIsSearching(false)
     },
-    [groupedProteins],
+    [groupedProteins, loadedProteins.length, proteinHeaders.length],
   )
 
   useEffect(() => {
@@ -955,7 +975,7 @@ function ModularProteinViewer() {
       <div className="mt-3 text-center">
         <small className="text-white-50">
           💡 Try searching: protein functions, KO terms, locus IDs, or database names
-          {groupedProteins.length > 0 && ` (searches across all ${totalEntries.toLocaleString()} proteins)`}
+          {groupedProteins.length > 0 && ` (searches across all ${totalEntries.toLocaleString()} proteins when needed)`}
         </small>
       </div>
     </section>
