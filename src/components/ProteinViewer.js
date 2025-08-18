@@ -610,7 +610,7 @@ function ModularProteinViewer() {
       <div className="d-flex justify-content-center align-items-center" style={{ minHeight: "400px" }}>
         <div className="text-center" style={{ minWidth: "400px" }}>
           <Loader className="spinner-border text-primary mb-3" size={32} />
-          <h5 className="text-white">Loading Modular Protein Database</h5>
+          <h5 className="text-white">Loading Protein Database</h5>
           <p className="text-white mb-3">{loadingStatus}</p>
           <ProgressBar now={loadingProgress} className="mb-3" />
           <small className="text-white mb-3 d-block">{Math.round(loadingProgress)}% complete</small>
@@ -716,7 +716,7 @@ function ModularProteinViewer() {
     <section className="bg-primary rounded p-4 m-3">
       <div className="d-flex justify-content-between align-items-center mb-4">
         <h2 className="h2 font-monospace mb-0 text-white">
-          Modular Protein Explorer
+          Molecular Voyager - Explore Protein Sequences
           <span className="text-white-50 fs-6 ms-2">
             (Page {currentPage} of {totalPages}: showing {filteredData.length} of{" "}
             {displayProteins.length.toLocaleString()}{" "}
