@@ -13,6 +13,29 @@ class ModularDataManager {
     this.cache = new Map()
     this.loadingPromises = new Map()
     this.failedFiles = new Set()
+    this.requestQueue = []
+    this.activeRequests = 0
+    this.maxConcurrentRequests = 3 // Limit concurrent requests
+    this.knownFiles = new Set() // Track files that actually exist
+  }
+
+  async processRequestQueue() {
+    while (this.requestQueue.length > 0 && this.activeRequests < this.maxConcurrentRequests) {
+      const { filename, resolve, reject } = this.requestQueue.shift()
+      this.activeRequests++
+
+      try {
+        const data = await this.fetchPartFile(filename)
+        this.knownFiles.add(filename) // Track successful files
+        resolve(data)
+      } catch (error) {
+        reject(error)
+      } finally {
+        this.activeRequests--
+        // Process next request
+        setTimeout(() => this.processRequestQueue(), 10)
+      }
+    }
   }
 
   async loadProteinHeaders() {
@@ -61,7 +84,11 @@ class ModularDataManager {
       return await this.loadingPromises.get(filename)
     }
 
-    const loadPromise = this.fetchPartFile(filename)
+    const loadPromise = new Promise((resolve, reject) => {
+      this.requestQueue.push({ filename, resolve, reject })
+      this.processRequestQueue()
+    })
+
     this.loadingPromises.set(filename, loadPromise)
 
     try {
@@ -74,7 +101,7 @@ class ModularDataManager {
       console.log("[v0] Failed to load:", filename, error.message)
       this.loadingPromises.delete(filename)
       this.failedFiles.add(filename)
-      return null // Return null instead of throwing
+      return null
     }
   }
 
@@ -91,11 +118,10 @@ class ModularDataManager {
     const sourcePrefixes = [
       ...new Set(
         sourceFiles.map((file) => {
-          // Map source file names to actual file prefixes
           const fileName = file.replace("_proteins.fa", "").replace(".fa", "")
 
           const prefixMap = {
-            agave_deserti: "agave_deserti", // Keep original for protein files
+            agave_deserti: "agave_deserti",
             agave_tequilana: "agave_tequilana",
             agave_fourcroydes: "fourcroydes",
             agave_sisalana: "sisalana",
@@ -123,13 +149,40 @@ class ModularDataManager {
                 ? "hybrid11648"
                 : prefix
 
-      // Add annotation files - these exist for all species in parts 1-17
-      for (let i = 1; i <= 17; i++) {
-        partFiles.add(`${annotationPrefix}_annotations_part${i}.json`)
-      }
+      partFiles.add(`${annotationPrefix}_annotations_part1.json`)
     })
 
     return Array.from(partFiles)
+  }
+
+  async loadAdditionalAnnotationParts(sourcePrefixes, maxPart = 5) {
+    const additionalFiles = []
+
+    for (const prefix of sourcePrefixes) {
+      const annotationPrefix =
+        prefix === "agave_deserti"
+          ? "desertii"
+          : prefix === "agave_fourcroydes"
+            ? "fourcroydes"
+            : prefix === "agave_sisalana"
+              ? "sisalana"
+              : prefix === "hybrid_11648"
+                ? "hybrid11648"
+                : prefix
+
+      // Only try parts 2-5 initially, not all 17
+      for (let i = 2; i <= maxPart; i++) {
+        const filename = `${annotationPrefix}_annotations_part${i}.json`
+        if (!this.failedFiles.has(filename)) {
+          additionalFiles.push(filename)
+        }
+      }
+    }
+
+    // Load additional files with throttling
+    const results = await Promise.allSettled(additionalFiles.map((filename) => this.loadPartFile(filename)))
+
+    return results.filter((result) => result.status === "fulfilled" && result.value !== null)
   }
 
   extractProteinData(proteinId, loadedFiles) {
@@ -270,8 +323,9 @@ function ModularProteinViewer() {
     annotations: false,
   })
 
-  const BATCH_SIZE = 100
-  const INITIAL_DISPLAY_SIZE = 50
+  const BATCH_SIZE = 50 // Reduced from 100
+  const INITIAL_DISPLAY_SIZE = 25 // Reduced from 50
+  const SEARCH_BATCH_SIZE = 100 // Separate smaller batch for search
 
   const loadInitialData = async () => {
     try {
@@ -310,7 +364,7 @@ function ModularProteinViewer() {
       const proteinIds = headerBatch.map((h) => h.protein_id)
 
       const partFiles = dataManager.getPartFilesForProteins(proteinIds, sourceFiles)
-      setLoadingStatus(`Loading ${partFiles.length} data files...`)
+      setLoadingStatus(`Loading ${partFiles.length} essential files...`)
 
       setLoadingDetails((prev) => ({
         ...prev,
@@ -332,13 +386,11 @@ function ModularProteinViewer() {
 
       // Track loading status by file type
       const proteinFiles = fileResults.filter((r) => r.filename.includes("protein"))
-      const nucleotideFiles = fileResults.filter((r) => r.filename.includes("nucleotide"))
       const annotationFiles = fileResults.filter((r) => r.filename.includes("annotation"))
 
       setLoadingDetails((prev) => ({
         ...prev,
         proteins: proteinFiles.some((f) => f.success) ? "complete" : "error",
-        nucleotides: nucleotideFiles.some((f) => f.success) ? "complete" : "error",
         annotations: annotationFiles.some((f) => f.success) ? "complete" : "error",
       }))
 
@@ -353,7 +405,7 @@ function ModularProteinViewer() {
         }
       })
 
-      if (errors.length > 0 && errors.length > partFiles.length * 0.5) {
+      if (errors.length > 0 && errors.length > partFiles.length * 0.8) {
         setDataErrors(errors)
       }
 
@@ -432,7 +484,6 @@ function ModularProteinViewer() {
     if (loadedProteins.length >= proteinHeaders.length) return
 
     const nextBatch = proteinHeaders.slice(loadedProteins.length, loadedProteins.length + BATCH_SIZE)
-
     await loadProteinBatch(nextBatch)
   }
 
@@ -450,19 +501,36 @@ function ModularProteinViewer() {
       setIsSearching(true)
 
       if (searchQuery.trim() && loadedProteins.length < proteinHeaders.length) {
-        console.log("[v0] Search requires full dataset, loading remaining proteins...")
+        console.log("[v0] Search requires more data, loading progressively...")
 
-        // Load all remaining proteins for comprehensive search
         const remainingHeaders = proteinHeaders.slice(loadedProteins.length)
-        const batchSize = 500 // Larger batches for search
+        const searchBatches = Math.min(3, Math.ceil(remainingHeaders.length / SEARCH_BATCH_SIZE)) // Load max 3 batches for search
 
-        for (let i = 0; i < remainingHeaders.length; i += batchSize) {
-          const batch = remainingHeaders.slice(i, i + batchSize)
+        for (let i = 0; i < searchBatches; i++) {
+          const batch = remainingHeaders.slice(i * SEARCH_BATCH_SIZE, (i + 1) * SEARCH_BATCH_SIZE)
           await loadProteinBatch(batch)
+
+          // Check if we have enough results after each batch
+          const currentResults = groupedProteins.filter((group) => {
+            const matchesSpecies = speciesFilter === "all" || group.species.includes(speciesFilter)
+            if (!searchQuery.trim()) return matchesSpecies
+
+            const queryLower = searchQuery.toLowerCase().trim()
+            const matchesDisplayName = group.displayName.toLowerCase().includes(queryLower)
+            const matchesRootId = group.rootId.toLowerCase().includes(queryLower)
+            const matchesKO = group.isoforms.some((isoform) => isoform.ko.toLowerCase().includes(queryLower))
+
+            return matchesSpecies && (matchesDisplayName || matchesRootId || matchesKO)
+          })
+
+          // If we have enough results, stop loading more
+          if (currentResults.length >= 50) {
+            break
+          }
         }
       }
 
-      // Now search across all loaded proteins
+      // Search across loaded proteins
       const results = groupedProteins.filter((group) => {
         const matchesSpecies = speciesFilter === "all" || group.species.includes(speciesFilter)
 
@@ -486,7 +554,7 @@ function ModularProteinViewer() {
         )
       })
 
-      setDisplayProteins(results.slice(0, 2000))
+      setDisplayProteins(results.slice(0, 200))
       setIsSearching(false)
     },
     [groupedProteins, loadedProteins.length, proteinHeaders.length],
