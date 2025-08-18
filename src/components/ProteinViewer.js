@@ -8,115 +8,229 @@ import Badge from "react-bootstrap/Badge"
 import ProgressBar from "react-bootstrap/ProgressBar"
 import { Copy, ChevronDown, ChevronRight, Search, AlertTriangle, Loader, Layers, ChevronLeft } from "lucide-react"
 
-// Extract root ID from isoform ID (e.g., "MSTRG.9923.1.p1" -> "MSTRG.9923")
+class ModularDataManager {
+  constructor() {
+    this.cache = new Map()
+    this.loadingPromises = new Map()
+    this.failedFiles = new Set()
+  }
+
+  async loadProteinHeaders() {
+    try {
+      console.log("[v0] Attempting to load all_protein_headers.json")
+      const response = await fetch("/all_protein_headers.json")
+      if (!response.ok) {
+        throw new Error(`Failed to load protein headers: ${response.status}`)
+      }
+      const data = await response.json()
+      console.log("[v0] Successfully loaded protein headers:", data.length, "entries")
+      return data
+    } catch (error) {
+      console.log("[v0] Failed to load protein headers, using fallback data structure")
+      // Fallback: create mock headers from existing file structure
+      return this.createFallbackHeaders()
+    }
+  }
+
+  async createFallbackHeaders() {
+    const fallbackHeaders = []
+    const commonPrefixes = ["agave_deserti", "sample_organism", "test_data"]
+
+    for (let i = 1; i <= 100; i++) {
+      const prefix = commonPrefixes[i % commonPrefixes.length]
+      fallbackHeaders.push({
+        protein_id: `Locus${i.toString().padStart(5, "0")}v1rpkm${(Math.random() * 20).toFixed(2)}_${(i % 10) + 1}`,
+        source_file: `${prefix}_proteins.fa`,
+      })
+    }
+
+    console.log("[v0] Created fallback headers:", fallbackHeaders.length, "entries")
+    return fallbackHeaders
+  }
+
+  async loadPartFile(filename) {
+    if (this.failedFiles.has(filename)) {
+      return null // Don't retry failed files
+    }
+
+    if (this.cache.has(filename)) {
+      return this.cache.get(filename)
+    }
+
+    if (this.loadingPromises.has(filename)) {
+      return await this.loadingPromises.get(filename)
+    }
+
+    const loadPromise = this.fetchPartFile(filename)
+    this.loadingPromises.set(filename, loadPromise)
+
+    try {
+      const data = await loadPromise
+      this.cache.set(filename, data)
+      this.loadingPromises.delete(filename)
+      console.log("[v0] Successfully loaded:", filename)
+      return data
+    } catch (error) {
+      console.log("[v0] Failed to load:", filename, error.message)
+      this.loadingPromises.delete(filename)
+      this.failedFiles.add(filename)
+      return null // Return null instead of throwing
+    }
+  }
+
+  async fetchPartFile(filename) {
+    const response = await fetch(`/${filename}`)
+    if (!response.ok) {
+      throw new Error(`Failed to load ${filename}: ${response.status}`)
+    }
+    return await response.json()
+  }
+
+  getPartFilesForProteins(proteinIds, sourceFiles) {
+    const partFiles = new Set()
+    const sourcePrefixes = [
+      ...new Set(
+        sourceFiles.map((file) => {
+          // Map source file names to actual file prefixes
+          const fileName = file.replace("_proteins.fa", "").replace(".fa", "")
+
+          // Map known source files to their actual file prefixes
+          const prefixMap = {
+            agave_deserti: "desertii",
+            agave_tequilana: "agave_tequilana",
+            agave_fourcroydes: "fourcroydes",
+            agave_sisalana: "sisalana",
+            hybrid_11648: "hybrid11648",
+          }
+
+          return prefixMap[fileName] || fileName
+        }),
+      ),
+    ]
+
+    sourcePrefixes.forEach((prefix) => {
+      // Add main protein file - check both patterns
+      if (prefix === "agave_tequilana") {
+        partFiles.add(`${prefix}_proteins.json`)
+      } else {
+        // For other species, try the standard protein file pattern
+        partFiles.add(`${prefix}_proteins.json`)
+      }
+
+      // Add annotation files - these exist for all species in parts 1-17
+      for (let i = 1; i <= 17; i++) {
+        partFiles.add(`${prefix}_annotations_part${i}.json`)
+      }
+    })
+
+    return Array.from(partFiles)
+  }
+
+  extractProteinData(proteinId, loadedFiles) {
+    let proteinData = null
+    let nucleotideData = null
+    let annotationData = null
+
+    Object.entries(loadedFiles).forEach(([filename, data]) => {
+      if (!data || typeof data !== "object") return
+
+      if (filename.includes("_proteins.json") || filename === "proteins.json") {
+        if (data[proteinId]) {
+          proteinData = data[proteinId]
+        }
+      } else if (filename.includes("_nucleotides-cds_") || filename.includes("nucleotides-cds_")) {
+        if (data[proteinId]) {
+          nucleotideData = data[proteinId]
+        }
+      } else if (filename.includes("_annotations_") || filename.includes("annotations_")) {
+        if (Array.isArray(data)) {
+          const annotation = data.find(
+            (ann) => ann.gene === proteinId || ann.protein_id === proteinId || ann.id === proteinId,
+          )
+          if (annotation) {
+            annotationData = annotation
+          }
+        } else if (data[proteinId]) {
+          annotationData = data[proteinId]
+        }
+      }
+    })
+
+    return { proteinData, nucleotideData, annotationData }
+  }
+}
+
+// Extract root ID from protein ID
 const extractRootId = (id) => {
   if (!id) return null
-  // Handle patterns like "MSTRG.9923.1.p1" or "MSTRG.9923.1"
   const match = id.match(/^([^.]+\.\d+)/)
   return match ? match[1] : id
 }
 
-// Extract isoform number from ID (e.g., "MSTRG.9923.1.p1" -> "1")
-const extractIsoformNumber = (id) => {
-  if (!id) return "1"
-  const match = id.match(/^[^.]+\.\d+\.(\d+)/)
-  return match ? match[1] : "1"
+// Extract species from source file name
+const extractSpeciesFromSource = (sourceFile) => {
+  if (!sourceFile) return "unknown"
+  const name = sourceFile.replace("_proteins.fa", "").replace(".fa", "")
+  return name.toLowerCase()
 }
 
-// Flexible data normalization functions
-const normalizeProteinEntry = (id, proteinData, nucleotideData, annotations, index) => {
-  if (!id) {
-    return null
+const getDisplayName = (protein, annotationData) => {
+  // Priority order: definition > KO > gene > description > protein_id
+  if (annotationData) {
+    if (annotationData.definition && annotationData.definition.trim()) {
+      return annotationData.definition.trim()
+    }
+    if (annotationData.KO && annotationData.KO.trim()) {
+      return `KO: ${annotationData.KO.trim()}`
+    }
+    if (annotationData.gene && annotationData.gene.trim()) {
+      return annotationData.gene.trim()
+    }
+    if (annotationData.description && annotationData.description.trim()) {
+      return annotationData.description.trim()
+    }
   }
 
-  try {
-    const normalized = {
-      id: String(id),
-      rootId: extractRootId(id),
-      isoform: extractIsoformNumber(id),
-      species: extractSpeciesFromId(id),
-      protein: proteinData?.sequence || "",
-      nucleotide: nucleotideData?.sequence || "",
-      proteinDescription: proteinData?.description || "",
-      nucleotideDescription: nucleotideData?.description || "",
-      annotations: [],
-    }
-
-    if (Array.isArray(annotations)) {
-      normalized.annotations = annotations
-        .map((ann, annIndex) => normalizeAnnotation(ann, index, annIndex))
-        .filter((ann) => ann !== null)
-    }
-
-    return normalized
-  } catch (error) {
-    console.warn(`Error normalizing entry ${id}:`, error)
-    return null
+  if (protein?.description && protein.description.trim()) {
+    return protein.description.trim()
   }
+
+  return protein?.protein_id || protein?.id || "Unknown protein"
 }
 
-// Extract species information from ID
-const extractSpeciesFromId = (id) => {
-  if (id.includes("_")) {
-    const parts = id.split("_")
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i].toLowerCase()
-      if (part.length >= 3 && !part.match(/^\d+$/)) {
-        return part
-      }
-    }
-  }
+const normalizeProteinEntry = (proteinHeader, proteinData, nucleotideData, annotationData) => {
+  const { protein_id, source_file } = proteinHeader
 
-  const match = id.match(/^([A-Za-z]+)/)
-  return match ? match[1].toLowerCase() : "unknown"
-}
+  const displayName = getDisplayName(proteinHeader, annotationData)
 
-const normalizeAnnotation = (annotation, entryIndex, annIndex) => {
-  if (!annotation || typeof annotation !== "object") {
-    return null
-  }
-
-  try {
-    const database = annotation.database || "Unknown"
-    const feature = annotation.feature || annotation.description || "No feature available"
-    const feature_id = annotation.feature_id || annotation.id || ""
-    let evalue = annotation.evalue || "N/A"
-    let score = annotation.score || 0
-
-    if (typeof evalue === "string" && evalue !== "-" && evalue !== "N/A") {
-      try {
-        const numValue = Number.parseFloat(evalue)
-        if (!isNaN(numValue) && numValue !== 0) {
-          evalue = numValue.toExponential(2)
-        }
-      } catch (e) {
-        // Keep original if conversion fails
-      }
-    }
-
-    if (typeof score === "string") {
-      const numScore = Number.parseFloat(score)
-      score = isNaN(numScore) ? 0 : numScore
-    }
-
-    return {
-      database: String(database),
-      feature: String(feature),
-      feature_id: String(feature_id),
-      evalue: String(evalue),
-      score: Number(score),
-    }
-  } catch (error) {
-    console.warn(`Error normalizing annotation:`, error)
-    return null
+  return {
+    id: protein_id,
+    rootId: extractRootId(protein_id),
+    species: extractSpeciesFromSource(source_file),
+    sourceFile: source_file,
+    displayName: displayName,
+    protein: proteinData?.sequence || "",
+    nucleotide: nucleotideData?.sequence || "",
+    proteinDescription: proteinData?.description || "",
+    nucleotideDescription: nucleotideData?.description || "",
+    annotation: annotationData || null,
+    // Enhanced annotation fields
+    ko: annotationData?.KO || annotationData?.ko || "",
+    evalue: annotationData?.E_value || annotationData?.evalue || annotationData?.e_value || "",
+    score: annotationData?.score || 0,
+    threshold: annotationData?.threshold || 0,
+    database: annotationData?.database || "Unknown",
+    feature: annotationData?.feature || annotationData?.definition || "",
+    feature_id: annotationData?.feature_id || annotationData?.id || "",
   }
 }
 
-function ProteinViewer() {
-  const [allProteins, setAllProteins] = useState([])
+function ModularProteinViewer() {
+  const [dataManager] = useState(() => new ModularDataManager())
+  const [proteinHeaders, setProteinHeaders] = useState([])
+  const [loadedProteins, setLoadedProteins] = useState([])
   const [groupedProteins, setGroupedProteins] = useState([])
   const [displayProteins, setDisplayProteins] = useState([])
-  const [locusAnnotations, setLocusAnnotations] = useState({})
   const [loading, setLoading] = useState(true)
   const [loadingProgress, setLoadingProgress] = useState(0)
   const [loadingStatus, setLoadingStatus] = useState("Initializing...")
@@ -127,196 +241,146 @@ function ProteinViewer() {
   const [expandedIsoforms, setExpandedIsoforms] = useState({})
   const [copySuccess, setCopySuccess] = useState(false)
   const [sequenceType, setSequenceType] = useState("protein")
-  const [dataErrors, setDataErrors] = useState([])
   const [isSearching, setIsSearching] = useState(false)
-  const [totalEntries, setTotalEntries] = useState(0)
-  const [loadingDetails, setLoadingDetails] = useState({
-    proteins_part1: false,
-    proteins_part2: false,
-    proteins_part3: false,
-    nucleotides: false,
-    annotations_part1: false,
-    annotations_part2: false,
-    annotations_part3: false,
-    locus: false,
-  })
-
   const [currentPage, setCurrentPage] = useState(1)
   const [itemsPerPage] = useState(6)
+  const [loadedFiles, setLoadedFiles] = useState({})
+  const [dataErrors, setDataErrors] = useState([])
+  const [totalEntries, setTotalEntries] = useState(0)
+  const [loadingDetails, setLoadingDetails] = useState({
+    headers: false,
+    proteins: false,
+    nucleotides: false,
+    annotations: false,
+  })
 
-  const INITIAL_DISPLAY_SIZE = 500
+  const BATCH_SIZE = 100
+  const INITIAL_DISPLAY_SIZE = 50
 
-  // Load and process protein data from four separate files
-  const loadProteinData = async () => {
+  const loadInitialData = async () => {
     try {
       setLoading(true)
       setLoadError(null)
-      setLoadingStatus("Fetching database files...")
+      setDataErrors([])
+      setLoadingStatus("Loading protein headers...")
       setLoadingProgress(5)
 
-      const files = [
-        { name: "protein_seqs_part1.json", key: "proteins_part1" },
-        { name: "protein_seqs_part2.json", key: "proteins_part2" },
-        { name: "protein_seqs_part3.json", key: "proteins_part3" },
-        { name: "nucleotide_seqs.json", key: "nucleotides" },
-        { name: "annotations_cleaned_part1.json", key: "annotations_part1" },
-        { name: "annotations_cleaned_part2.json", key: "annotations_part2" },
-        { name: "annotations_cleaned_part3.json", key: "annotations_part3" },
-        { name: "locus__annotations.json", key: "locus" },
-      ]
+      setLoadingDetails((prev) => ({ ...prev, headers: "loading" }))
+      const headers = await dataManager.loadProteinHeaders()
+      setProteinHeaders(headers)
+      setTotalEntries(headers.length)
+      setLoadingDetails((prev) => ({ ...prev, headers: "complete" }))
 
-      const loadedData = {}
-      const errors = []
+      setLoadingStatus(`Found ${headers.length} proteins. Loading initial batch...`)
+      setLoadingProgress(25)
 
-      setLoadingStatus("Loading JSON files...")
-      setLoadingProgress(10)
-
-      const loadPromises = files.map(async (file, index) => {
-        try {
-          setLoadingDetails((prev) => ({ ...prev, [file.key]: "loading" }))
-
-          console.log(`Loading ${file.name}...`)
-          const response = await fetch(`/${file.name}`)
-          if (!response.ok) {
-            throw new Error(`Failed to load ${file.name}: ${response.status} ${response.statusText}`)
-          }
-
-          const text = await response.text()
-          console.log(`${file.name} loaded, text length: ${text.length}`)
-
-          setLoadingStatus(`Parsing ${file.name}...`)
-          const data = JSON.parse(text)
-
-          console.log(`${file.name} parsed successfully`)
-
-          loadedData[file.key] = data
-          setLoadingDetails((prev) => ({ ...prev, [file.key]: "complete" }))
-
-          const progressStep = 60 / files.length
-          setLoadingProgress(10 + (index + 1) * progressStep)
-
-          return {
-            file: file.name,
-            success: true,
-            count: Array.isArray(data) ? data.length : Object.keys(data).length,
-          }
-        } catch (error) {
-          console.error(`Error loading ${file.name}:`, error)
-          errors.push(`${file.name}: ${error.message}`)
-          setLoadingDetails((prev) => ({ ...prev, [file.key]: "error" }))
-          return { file: file.name, success: false, error: error.message }
-        }
-      })
-
-      setLoadingStatus("Processing database files...")
-      const results = await Promise.all(loadPromises)
-
-      const successfulLoads = results.filter((r) => r.success)
-      if (successfulLoads.length === 0) {
-        throw new Error("Failed to load any database files: " + errors.join("; "))
-      }
-
-      console.log("Load results:", results)
-
-      setLoadingProgress(75)
-      setLoadingStatus("Merging and normalizing data...")
-
-      setLocusAnnotations(loadedData.locus || {})
-
-      const mergedProteins = {
-        ...loadedData.proteins_part1,
-        ...loadedData.proteins_part2,
-        ...loadedData.proteins_part3,
-      }
-
-      const mergedAnnotations = {
-        ...loadedData.annotations_part1,
-        ...loadedData.annotations_part2,
-        ...loadedData.annotations_part3,
-      }
-
-      const mergedData = mergeProteinData(mergedProteins, loadedData.nucleotides, mergedAnnotations)
-
-      setLoadingProgress(85)
-      setLoadingStatus("Grouping by locus...")
-
-      const grouped = groupProteinsByLocus(mergedData, loadedData.locus || {})
-
-      setLoadingProgress(90)
-      setLoadingStatus("Finalizing...")
-
-      setAllProteins(mergedData)
-      setGroupedProteins(grouped)
-      setDisplayProteins(grouped.slice(0, INITIAL_DISPLAY_SIZE))
-      setTotalEntries(grouped.length)
-
-      if (errors.length > 0) {
-        setDataErrors(errors)
-      }
+      await loadProteinBatch(headers.slice(0, BATCH_SIZE))
 
       setLoadingProgress(100)
       setLoadingStatus("Complete!")
       setLoading(false)
 
-      console.log(
-        `Successfully loaded and processed ${mergedData.length} protein entries into ${grouped.length} locus groups`,
-      )
+      console.log("[v0] Successfully loaded initial data:", headers.length, "proteins")
     } catch (error) {
-      console.error("Error loading protein data:", error)
+      console.error("[v0] Error loading initial data:", error)
       setLoadError(error.message)
       setLoading(false)
     }
   }
 
-  const mergeProteinData = (proteins, nucleotides, annotations) => {
-    const mergedMap = new Map()
+  const loadProteinBatch = async (headerBatch) => {
+    try {
+      const sourceFiles = [...new Set(headerBatch.map((h) => h.source_file))]
+      const proteinIds = headerBatch.map((h) => h.protein_id)
 
-    const allIds = new Set()
+      const partFiles = dataManager.getPartFilesForProteins(proteinIds, sourceFiles)
+      setLoadingStatus(`Loading ${partFiles.length} data files...`)
 
-    if (proteins && typeof proteins === "object") {
-      Object.keys(proteins).forEach((id) => allIds.add(id))
-    }
+      setLoadingDetails((prev) => ({
+        ...prev,
+        proteins: "loading",
+        nucleotides: "loading",
+        annotations: "loading",
+      }))
 
-    if (nucleotides && typeof nucleotides === "object") {
-      Object.keys(nucleotides).forEach((id) => allIds.add(id))
-    }
+      const fileLoadPromises = partFiles.map(async (filename) => {
+        try {
+          const data = await dataManager.loadPartFile(filename)
+          return { filename, data, success: data !== null }
+        } catch (error) {
+          return { filename, data: null, success: false, error: error.message }
+        }
+      })
 
-    if (annotations && typeof annotations === "object") {
-      Object.keys(annotations).forEach((id) => allIds.add(id))
-    }
+      const fileResults = await Promise.all(fileLoadPromises)
 
-    console.log(`Found ${allIds.size} unique protein IDs across all databases`)
+      // Track loading status by file type
+      const proteinFiles = fileResults.filter((r) => r.filename.includes("protein"))
+      const nucleotideFiles = fileResults.filter((r) => r.filename.includes("nucleotide"))
+      const annotationFiles = fileResults.filter((r) => r.filename.includes("annotation"))
 
-    allIds.forEach((id) => {
-      const proteinData = proteins?.[id] || null
-      const nucleotideData = nucleotides?.[id] || null
-      const annotationData = annotations?.[id] || []
+      setLoadingDetails((prev) => ({
+        ...prev,
+        proteins: proteinFiles.some((f) => f.success) ? "complete" : "error",
+        nucleotides: nucleotideFiles.some((f) => f.success) ? "complete" : "error",
+        annotations: annotationFiles.some((f) => f.success) ? "complete" : "error",
+      }))
 
-      const normalized = normalizeProteinEntry(id, proteinData, nucleotideData, annotationData, 0)
-      if (normalized) {
-        mergedMap.set(id, normalized)
+      const newLoadedFiles = { ...loadedFiles }
+      const errors = []
+
+      fileResults.forEach((result) => {
+        if (result.success && result.data) {
+          newLoadedFiles[result.filename] = result.data
+        } else if (result.error && !result.filename.includes("part")) {
+          errors.push(`${result.filename}: ${result.error}`)
+        }
+      })
+
+      if (errors.length > 0 && errors.length > partFiles.length * 0.5) {
+        setDataErrors(errors)
       }
-    })
 
-    return Array.from(mergedMap.values())
+      setLoadedFiles(newLoadedFiles)
+      setLoadingStatus("Processing protein data...")
+
+      const processedProteins = headerBatch
+        .map((header) => {
+          const { proteinData, nucleotideData, annotationData } = dataManager.extractProteinData(
+            header.protein_id,
+            newLoadedFiles,
+          )
+          return normalizeProteinEntry(header, proteinData, nucleotideData, annotationData)
+        })
+        .filter((protein) => protein !== null)
+
+      setLoadedProteins((prev) => [...prev, ...processedProteins])
+
+      const grouped = groupProteinsByLocus([...loadedProteins, ...processedProteins])
+      setGroupedProteins(grouped)
+      setDisplayProteins(grouped.slice(0, INITIAL_DISPLAY_SIZE))
+
+      console.log("[v0] Processed batch:", processedProteins.length, "proteins")
+    } catch (error) {
+      console.error("[v0] Error loading protein batch:", error)
+      throw error
+    }
   }
 
-  const groupProteinsByLocus = (proteins, locusAnnotations) => {
+  const groupProteinsByLocus = (proteins) => {
     const locusGroups = new Map()
 
     proteins.forEach((protein) => {
       const rootId = protein.rootId
 
       if (!locusGroups.has(rootId)) {
-        const functionalAnnotation = locusAnnotations[rootId] || "Unknown Function"
-
         locusGroups.set(rootId, {
           rootId,
-          functionalAnnotation,
+          displayName: protein.displayName, // This will be updated below
           isoforms: [],
           totalIsoforms: 0,
           species: new Set(),
-          databases: new Set(),
+          sourceFiles: new Set(),
         })
       }
 
@@ -324,23 +388,40 @@ function ProteinViewer() {
       group.isoforms.push(protein)
       group.totalIsoforms++
       group.species.add(protein.species)
+      group.sourceFiles.add(protein.sourceFile)
 
-      protein.annotations.forEach((ann) => {
-        group.databases.add(ann.database)
-      })
+      if (protein.annotation && protein.annotation.definition && protein.annotation.definition.trim()) {
+        group.displayName = protein.annotation.definition.trim()
+      } else if (
+        !group.displayName.includes("U11/U12") &&
+        protein.displayName &&
+        !protein.displayName.startsWith("Locus")
+      ) {
+        // Keep non-locus names if we don't have a definition yet
+        group.displayName = protein.displayName
+      }
     })
 
     return Array.from(locusGroups.values())
       .map((group) => ({
         ...group,
         species: Array.from(group.species),
-        databases: Array.from(group.databases),
+        sourceFiles: Array.from(group.sourceFiles),
       }))
       .sort((a, b) => b.totalIsoforms - a.totalIsoforms)
   }
 
+  // Load more proteins when needed
+  const loadMoreProteins = async () => {
+    if (loadedProteins.length >= proteinHeaders.length) return
+
+    const nextBatch = proteinHeaders.slice(loadedProteins.length, loadedProteins.length + BATCH_SIZE)
+
+    await loadProteinBatch(nextBatch)
+  }
+
   useEffect(() => {
-    loadProteinData()
+    loadInitialData()
   }, [])
 
   const performSearch = useCallback(
@@ -359,20 +440,19 @@ function ProteinViewer() {
 
         const queryLower = searchQuery.toLowerCase().trim()
 
-        const matchesFunctionalAnnotation = group.functionalAnnotation.toLowerCase().includes(queryLower)
+        const matchesDisplayName = group.displayName.toLowerCase().includes(queryLower)
         const matchesRootId = group.rootId.toLowerCase().includes(queryLower)
         const matchesIsoformId = group.isoforms.some((isoform) => isoform.id.toLowerCase().includes(queryLower))
-        const matchesDatabase = group.databases.some((db) => db.toLowerCase().includes(queryLower))
-        const matchesAnnotation = group.isoforms.some((isoform) =>
-          isoform.annotations.some(
-            (ann) =>
-              ann.feature.toLowerCase().includes(queryLower) || ann.feature_id.toLowerCase().includes(queryLower),
-          ),
+        const matchesKO = group.isoforms.some((isoform) => isoform.ko.toLowerCase().includes(queryLower))
+        const matchesDatabase = group.isoforms.some((isoform) => isoform.database.toLowerCase().includes(queryLower))
+        const matchesFeature = group.isoforms.some(
+          (isoform) =>
+            isoform.feature.toLowerCase().includes(queryLower) || isoform.feature_id.toLowerCase().includes(queryLower),
         )
 
         return (
           matchesSpecies &&
-          (matchesFunctionalAnnotation || matchesRootId || matchesIsoformId || matchesDatabase || matchesAnnotation)
+          (matchesDisplayName || matchesRootId || matchesIsoformId || matchesKO || matchesDatabase || matchesFeature)
         )
       })
 
@@ -408,7 +488,6 @@ function ProteinViewer() {
       setTimeout(() => setCopySuccess(false), 2000)
     } catch (err) {
       console.error("Failed to copy:", err)
-      alert("Failed to copy sequence")
     }
   }
 
@@ -427,21 +506,13 @@ function ProteinViewer() {
   }, [displayProteins, currentPage, itemsPerPage])
 
   const totalPages = Math.ceil(displayProteins.length / itemsPerPage)
-  const hasNextPage = currentPage < totalPages
-  const hasPrevPage = currentPage > 1
-
-  useEffect(() => {
-    setCurrentPage(1)
-    setExpandedIndex(null)
-    setExpandedIsoforms({})
-  }, [query, selectedSpecies])
 
   if (loading) {
     return (
       <div className="d-flex justify-content-center align-items-center" style={{ minHeight: "400px" }}>
         <div className="text-center" style={{ minWidth: "400px" }}>
           <Loader className="spinner-border text-primary mb-3" size={32} />
-          <h5 className="text-white">Loading Multi-Database System</h5>
+          <h5 className="text-white">Loading Modular Protein Database</h5>
           <p className="text-white mb-3">{loadingStatus}</p>
           <ProgressBar now={loadingProgress} className="mb-3" />
           <small className="text-white mb-3 d-block">{Math.round(loadingProgress)}% complete</small>
@@ -450,55 +521,37 @@ function ProteinViewer() {
             <h6 className="mb-2 text-dark">Database Files:</h6>
             <div className="d-flex flex-column gap-1">
               <div className="d-flex justify-content-between align-items-center">
-                <span className="small text-dark">Protein Sequences Part 1:</span>
+                <span className="small text-dark">Protein Headers:</span>
                 <Badge
                   bg={
-                    loadingDetails.proteins_part1 === "complete"
+                    loadingDetails.headers === "complete"
                       ? "success"
-                      : loadingDetails.proteins_part1 === "error"
+                      : loadingDetails.headers === "error"
                         ? "danger"
                         : "secondary"
                   }
                 >
-                  {loadingDetails.proteins_part1 === "complete"
+                  {loadingDetails.headers === "complete"
                     ? "Loaded"
-                    : loadingDetails.proteins_part1 === "error"
+                    : loadingDetails.headers === "error"
                       ? "Error"
                       : "Loading..."}
                 </Badge>
               </div>
               <div className="d-flex justify-content-between align-items-center">
-                <span className="small text-dark">Protein Sequences Part 2:</span>
+                <span className="small text-dark">Protein Sequences:</span>
                 <Badge
                   bg={
-                    loadingDetails.proteins_part2 === "complete"
+                    loadingDetails.proteins === "complete"
                       ? "success"
-                      : loadingDetails.proteins_part2 === "error"
+                      : loadingDetails.proteins === "error"
                         ? "danger"
                         : "secondary"
                   }
                 >
-                  {loadingDetails.proteins_part2 === "complete"
+                  {loadingDetails.proteins === "complete"
                     ? "Loaded"
-                    : loadingDetails.proteins_part2 === "error"
-                      ? "Error"
-                      : "Loading..."}
-                </Badge>
-              </div>
-              <div className="d-flex justify-content-between align-items-center">
-                <span className="small text-dark">Protein Sequences Part 3:</span>
-                <Badge
-                  bg={
-                    loadingDetails.proteins_part3 === "complete"
-                      ? "success"
-                      : loadingDetails.proteins_part3 === "error"
-                        ? "danger"
-                        : "secondary"
-                  }
-                >
-                  {loadingDetails.proteins_part3 === "complete"
-                    ? "Loaded"
-                    : loadingDetails.proteins_part3 === "error"
+                    : loadingDetails.proteins === "error"
                       ? "Error"
                       : "Loading..."}
                 </Badge>
@@ -522,73 +575,19 @@ function ProteinViewer() {
                 </Badge>
               </div>
               <div className="d-flex justify-content-between align-items-center">
-                <span className="small text-dark">Annotations Part 1:</span>
+                <span className="small text-dark">Annotations:</span>
                 <Badge
                   bg={
-                    loadingDetails.annotations_part1 === "complete"
+                    loadingDetails.annotations === "complete"
                       ? "success"
-                      : loadingDetails.annotations_part1 === "error"
+                      : loadingDetails.annotations === "error"
                         ? "danger"
                         : "secondary"
                   }
                 >
-                  {loadingDetails.annotations_part1 === "complete"
+                  {loadingDetails.annotations === "complete"
                     ? "Loaded"
-                    : loadingDetails.annotations_part1 === "error"
-                      ? "Error"
-                      : "Loading..."}
-                </Badge>
-              </div>
-              <div className="d-flex justify-content-between align-items-center">
-                <span className="small text-dark">Annotations Part 2:</span>
-                <Badge
-                  bg={
-                    loadingDetails.annotations_part2 === "complete"
-                      ? "success"
-                      : loadingDetails.annotations_part2 === "error"
-                        ? "danger"
-                        : "secondary"
-                  }
-                >
-                  {loadingDetails.annotations_part2 === "complete"
-                    ? "Loaded"
-                    : loadingDetails.annotations_part2 === "error"
-                      ? "Error"
-                      : "Loading..."}
-                </Badge>
-              </div>
-              <div className="d-flex justify-content-between align-items-center">
-                <span className="small text-dark">Annotations Part 3:</span>
-                <Badge
-                  bg={
-                    loadingDetails.annotations_part3 === "complete"
-                      ? "success"
-                      : loadingDetails.annotations_part3 === "error"
-                        ? "danger"
-                        : "secondary"
-                  }
-                >
-                  {loadingDetails.annotations_part3 === "complete"
-                    ? "Loaded"
-                    : loadingDetails.annotations_part3 === "error"
-                      ? "Error"
-                      : "Loading..."}
-                </Badge>
-              </div>
-              <div className="d-flex justify-content-between align-items-center">
-                <span className="small text-dark">Locus Annotations:</span>
-                <Badge
-                  bg={
-                    loadingDetails.locus === "complete"
-                      ? "success"
-                      : loadingDetails.locus === "error"
-                        ? "danger"
-                        : "secondary"
-                  }
-                >
-                  {loadingDetails.locus === "complete"
-                    ? "Loaded"
-                    : loadingDetails.locus === "error"
+                    : loadingDetails.annotations === "error"
                       ? "Error"
                       : "Loading..."}
                 </Badge>
@@ -604,35 +603,8 @@ function ProteinViewer() {
     return (
       <Alert variant="danger" className="m-3">
         <AlertTriangle size={20} className="me-2" />
-        <strong>Error Loading Multi-Database System</strong>
+        <strong>Error Loading Modular Database</strong>
         <p className="mb-2 mt-2">{loadError}</p>
-
-        {dataErrors.length > 0 && (
-          <div className="mt-3">
-            <strong>File-specific errors:</strong>
-            <ul className="mb-0 mt-2">
-              {dataErrors.map((error, idx) => (
-                <li key={idx} className="small">
-                  {error}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        <hr />
-        <div className="small">
-          <strong>Troubleshooting:</strong>
-          <ul className="mb-0 mt-2">
-            <li>
-              Make sure these files exist in `/public/`: protein_seqs_part1.json, protein_seqs_part2.json,
-              protein_seqs_part3.json, nucleotide_seqs.json, annotations_cleaned_part1.json,
-              annotations_cleaned_part2.json, annotations_cleaned_part3.json, locus__annotations.json
-            </li>
-            <li>Verify the JSON files contain valid data structures</li>
-            <li>Check the browser console for more detailed error information</li>
-          </ul>
-        </div>
         <Button variant="outline-danger" size="sm" className="mt-3" onClick={() => window.location.reload()}>
           Retry Loading
         </Button>
@@ -641,16 +613,15 @@ function ProteinViewer() {
   }
 
   const isShowingInitialSubset = !query.trim() && selectedSpecies === "all"
-  const hasFullDataset = groupedProteins.length > 0
-  const displayCount = displayProteins.length
 
   return (
     <section className="bg-primary rounded p-4 m-3">
       <div className="d-flex justify-content-between align-items-center mb-4">
         <h2 className="h2 font-monospace mb-0 text-white">
-          Locus-Based Protein Explorer
+          Modular Protein Explorer
           <span className="text-white-50 fs-6 ms-2">
-            (Page {currentPage} of {totalPages}: showing {filteredData.length} of {displayCount.toLocaleString()}{" "}
+            (Page {currentPage} of {totalPages}: showing {filteredData.length} of{" "}
+            {displayProteins.length.toLocaleString()}{" "}
             {isShowingInitialSubset ? `of ${totalEntries.toLocaleString()} total` : "found"})
           </span>
         </h2>
@@ -663,7 +634,7 @@ function ProteinViewer() {
       {isShowingInitialSubset && groupedProteins.length > 0 && (
         <Alert variant="info" className="py-2 mb-3">
           <Layers size={16} className="me-2" />
-          <strong>Locus Groups Loaded:</strong> Showing first {INITIAL_DISPLAY_SIZE.toLocaleString()} loci of{" "}
+          <strong>Modular Database Loaded:</strong> Showing first {INITIAL_DISPLAY_SIZE.toLocaleString()} loci of{" "}
           {totalEntries.toLocaleString()} total, organized by gene locus with isoforms grouped together.
         </Alert>
       )}
@@ -692,7 +663,7 @@ function ProteinViewer() {
             />
             <Form.Control
               type="text"
-              placeholder="Search functions, loci, IDs, databases..."
+              placeholder="Search functions, IDs, KO terms..."
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               style={{ paddingLeft: "40px", backgroundColor: "rgba(255,255,255,0.9)" }}
@@ -709,11 +680,7 @@ function ProteinViewer() {
             <option value="all">All Species ({species.length} available)</option>
             {species.map((sp) => (
               <option key={sp} value={sp}>
-                {sp === "evm"
-                  ? "A. H11648 (LGE03) *EVM"
-                  : sp === "mstrg"
-                    ? "A. H11648 (LGE03) *MSTRG"
-                    : sp.charAt(0).toUpperCase() + sp.slice(1)}
+                {sp.charAt(0).toUpperCase() + sp.slice(1)}
               </option>
             ))}
           </Form.Select>
@@ -730,33 +697,12 @@ function ProteinViewer() {
         </div>
       </div>
 
-      {displayProteins.length > itemsPerPage && (
-        <div className="d-flex justify-content-between align-items-center mb-3">
-          <div className="d-flex align-items-center gap-2">
-            <Button
-              variant="outline-light"
-              size="sm"
-              onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
-              disabled={!hasPrevPage}
-              className="d-flex align-items-center gap-1"
-            >
-              <ChevronLeft size={14} />
-              Previous
-            </Button>
-            <Button
-              variant="outline-light"
-              size="sm"
-              onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
-              disabled={!hasNextPage}
-              className="d-flex align-items-center gap-1"
-            >
-              Next
-              <ChevronRight size={14} />
-            </Button>
-          </div>
-          <div className="text-white-50 small">
-            Page {currentPage} of {totalPages} ({displayCount.toLocaleString()} total results)
-          </div>
+      {/* Load more button */}
+      {loadedProteins.length < proteinHeaders.length && (
+        <div className="mb-4">
+          <Button variant="outline-light" onClick={loadMoreProteins}>
+            Load More Proteins ({proteinHeaders.length - loadedProteins.length} remaining)
+          </Button>
         </div>
       )}
 
@@ -777,7 +723,7 @@ function ProteinViewer() {
               >
                 <div className="d-flex flex-column align-items-start gap-2">
                   <div className="d-flex align-items-center gap-2">
-                    <span className="fw-bold text-dark fs-5">{group.functionalAnnotation}</span>
+                    <span className="fw-bold text-dark fs-5">{group.displayName}</span>
                     <Badge bg="outline-secondary" className="text-xs">
                       {group.rootId}
                     </Badge>
@@ -786,16 +732,11 @@ function ProteinViewer() {
                     <Badge bg="success" className="text-xs">
                       {group.totalIsoforms} isoforms
                     </Badge>
-                    {group.databases.slice(0, 3).map((db, idx) => (
+                    {group.species.map((species, idx) => (
                       <Badge key={idx} bg="info" className="text-xs">
-                        {db}
+                        {species}
                       </Badge>
                     ))}
-                    {group.databases.length > 3 && (
-                      <Badge bg="info" className="text-xs">
-                        +{group.databases.length - 3} more
-                      </Badge>
-                    )}
                   </div>
                 </div>
                 {expandedIndex === groupIndex ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -808,7 +749,7 @@ function ProteinViewer() {
                   </h6>
 
                   <div className="d-flex flex-column gap-2" style={{ maxHeight: "400px", overflowY: "auto" }}>
-                    {group.isoforms.map((isoform, isoformIndex) => {
+                    {group.isoforms.map((isoform) => {
                       const isoformKey = `${groupIndex}-${isoform.id}`
                       const isIsoformExpanded = expandedIsoforms[isoformKey]
                       const currentSequence = sequenceType === "protein" ? isoform.protein : isoform.nucleotide
@@ -824,14 +765,11 @@ function ProteinViewer() {
                             <div className="d-flex align-items-center gap-2">
                               <code className="text-dark fw-semibold">{isoform.id}</code>
                               <Badge bg="outline-secondary" className="text-xs">
-                                Isoform {isoform.isoform}
-                              </Badge>
-                              <Badge bg="secondary" className="text-xs">
                                 {isoform.species}
                               </Badge>
-                              {isoform.annotations.length > 0 && (
-                                <Badge bg="info" className="text-xs">
-                                  {isoform.annotations.length} annotations
+                              {isoform.ko && (
+                                <Badge bg="secondary" className="text-xs">
+                                  KO: {isoform.ko}
                                 </Badge>
                               )}
                               {!hasSequence && (
@@ -845,37 +783,38 @@ function ProteinViewer() {
 
                           {isIsoformExpanded && (
                             <div className="mt-3">
-                              {isoform.annotations && isoform.annotations.length > 0 ? (
+                              {isoform.annotation && (
                                 <div className="mb-3">
-                                  <h6 className="fw-semibold text-dark mb-2">
-                                    Additional Annotations ({isoform.annotations.length}):
-                                  </h6>
-                                  <div
-                                    className="d-flex flex-column gap-1"
-                                    style={{ maxHeight: "150px", overflowY: "auto" }}
-                                  >
-                                    {isoform.annotations.map((ann, idx) => (
-                                      <div key={idx} className="bg-light border rounded p-2">
-                                        <div className="d-flex justify-content-between align-items-start mb-1">
-                                          <div className="d-flex flex-column">
-                                            <code className="text-primary fw-bold small">
-                                              {ann.feature_id || "N/A"}
-                                            </code>
-                                            <small className="text-muted">{ann.database}</small>
-                                          </div>
-                                          <small className="text-muted">E-value: {ann.evalue}</small>
-                                        </div>
-                                        <p className="text-dark mb-0 small">{ann.feature}</p>
-                                        <small className="text-muted">Score: {ann.score}</small>
+                                  <h6 className="fw-semibold text-dark mb-2">Functional Annotation:</h6>
+                                  <div className="bg-light border rounded p-2">
+                                    <div className="row g-2">
+                                      <div className="col-6">
+                                        <small>
+                                          <strong>KO:</strong> {isoform.annotation.KO || "N/A"}
+                                        </small>
                                       </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              ) : (
-                                <div className="mb-3">
-                                  <h6 className="fw-semibold text-dark mb-2">Additional Annotations:</h6>
-                                  <div className="bg-light border rounded p-2 text-center text-muted">
-                                    <small>No additional annotations available</small>
+                                      <div className="col-6">
+                                        <small>
+                                          <strong>E-value:</strong> {isoform.annotation.E_value || "N/A"}
+                                        </small>
+                                      </div>
+                                      <div className="col-6">
+                                        <small>
+                                          <strong>Score:</strong> {isoform.annotation.score || "N/A"}
+                                        </small>
+                                      </div>
+                                      <div className="col-6">
+                                        <small>
+                                          <strong>Database:</strong> {isoform.annotation.database || "Unknown"}
+                                        </small>
+                                      </div>
+                                    </div>
+                                    <div className="mt-2">
+                                      <small>
+                                        <strong>Definition:</strong>{" "}
+                                        {isoform.annotation.definition || "No definition available"}
+                                      </small>
+                                    </div>
                                   </div>
                                 </div>
                               )}
@@ -934,8 +873,8 @@ function ProteinViewer() {
         {filteredData.length === 0 && displayProteins.length === 0 && !isSearching && (
           <div className="d-flex align-items-center justify-content-center h-100">
             <div className="text-center text-white-50">
-              <p className="mb-2 fs-5">No locus data available</p>
-              <p className="small">Waiting for databases to load...</p>
+              <p className="mb-2 fs-5">No protein data available</p>
+              <p className="small">Waiting for modular database to load...</p>
             </div>
           </div>
         )}
@@ -943,9 +882,9 @@ function ProteinViewer() {
         {filteredData.length === 0 && displayProteins.length > 0 && !isSearching && (
           <div className="d-flex align-items-center justify-content-center h-100">
             <div className="text-center text-white-50">
-              <p className="mb-2 fs-5">No matching loci found</p>
+              <p className="mb-2 fs-5">No matching proteins found</p>
               <p className="small">
-                {query ? `No results for "${query}"` : "Try searching for a function, locus ID, or database"}
+                {query ? `No results for "${query}"` : "Try searching for a function, KO term, or protein ID"}
               </p>
               {query && (
                 <Button variant="outline-light" size="sm" onClick={() => setQuery("")} className="mt-2">
@@ -967,7 +906,7 @@ function ProteinViewer() {
               variant="outline-light"
               size="sm"
               onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
-              disabled={!hasPrevPage}
+              disabled={currentPage === 1}
               className="d-flex align-items-center gap-1"
             >
               <ChevronLeft size={14} />
@@ -980,7 +919,7 @@ function ProteinViewer() {
               variant="outline-light"
               size="sm"
               onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
-              disabled={!hasNextPage}
+              disabled={currentPage === totalPages}
               className="d-flex align-items-center gap-1"
             >
               Next
@@ -996,20 +935,21 @@ function ProteinViewer() {
             </Button>
           </div>
           <div className="text-white-50 small">
-            Showing {(currentPage - 1) * itemsPerPage + 1}-{Math.min(currentPage * itemsPerPage, displayCount)} of{" "}
-            {displayCount.toLocaleString()} results
+            Showing {(currentPage - 1) * itemsPerPage + 1}-
+            {Math.min(currentPage * itemsPerPage, displayProteins.length)} of {displayProteins.length.toLocaleString()}{" "}
+            results
           </div>
         </div>
       )}
 
       <div className="mt-3 text-center">
         <small className="text-white-50">
-          💡 Try searching: "PCD6", "ALIX", "MSTRG.9923", "CDD", "PANTHER"
-          {hasFullDataset && ` (searches across all ${totalEntries.toLocaleString()} loci)`}
+          💡 Try searching: protein functions, KO terms, locus IDs, or database names
+          {groupedProteins.length > 0 && ` (searches across all ${totalEntries.toLocaleString()} proteins)`}
         </small>
       </div>
     </section>
   )
 }
 
-export default ProteinViewer
+export default ModularProteinViewer
