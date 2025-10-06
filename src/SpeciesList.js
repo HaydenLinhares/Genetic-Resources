@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from "react"
 
 const researcherImages = {
-  "Fábio Trigo Raya": "/images/fabio_trigo.jpg",
+  "Fábio Trigo Raya": "/images/fabio_trigo.JPG",
   // Add more as needed
 }
 
